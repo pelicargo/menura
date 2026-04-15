@@ -25,6 +25,9 @@ const AGENTS: Record<string, string> = {
   "+15551234567": "Agent Name",
 };
 
+// Local db of which calls were answered by any agent
+const answeredConferences: Set<string> = new Set<string>();
+
 // Create Twilio client for Twilio Conferences
 const twilioClient = twilio(TWILIO_SID, TWILIO_TOKEN);
 
@@ -82,6 +85,8 @@ app.post("/call", async (req: Request, res: Response): Promise<void> => {
         text: `✅ Call answered by agent: ${agentNumber}`,
       });
 
+      answeredConferences.add(conferenceName);
+
       console.log("DEBUG: Join THIS agent to the conference");
       console.log(`DEBUG: conferenceName = ${conferenceName}`);
       response.dial().conference(
@@ -113,29 +118,29 @@ app.post("/call", async (req: Request, res: Response): Promise<void> => {
     // Finished call logic
     if (action === "finished") {
       console.log(`DEBUG: Finished call path`);
-      const status = (event.DialCallStatus || "").toLowerCase();
-      console.log(`DEBUG: status = ${status}`);
+      const conferenceName: string =
+        (req.query.conferenceName as string) ||
+        (() => {
+          throw new Error("CRITICAL: conferenceName missing");
+        })();
 
-      const missedStatuses = ["no-answer", "busy", "failed", "canceled"];
+      // Check if this is a not missed call
+      const isFinishedCall = answeredConferences.has(conferenceName);
 
-      // Check if this is a missed call
-      const isMissed =
-        missedStatuses.includes(status) ||
-        (status === "completed" && event.DialStatus !== "answered");
-
-      if (isMissed) {
+      if (isFinishedCall) {
         await axios.post(SLACK_WEBHOOK_URL, {
-          text: `❌ Missed call from ${event.From}. (Status: ${status})`,
+          text: `✅ Finished call from ${event.From}`,
         });
-        res.type("text/xml").send(response.toString());
-        return;
       } else {
         await axios.post(SLACK_WEBHOOK_URL, {
-          text: `✅ Finished call from ${event.From}. (Status: ${status})`,
+          text: `❌ Missed call from ${event.From}`,
         });
-        res.type("text/xml").send(response.toString());
-        return;
       }
+
+      // cleanup
+      answeredConferences.delete(conferenceName);
+      res.type("text/xml").send(response.toString());
+      return;
     }
 
     // Fresh call (no DialStatus yet)
@@ -153,7 +158,7 @@ app.post("/call", async (req: Request, res: Response): Promise<void> => {
       const dial: InstanceType<typeof twilio.twiml.VoiceResponse.Dial> =
         response.dial({
           // This tells Twilio: "When this Dial is done, call this URL"
-          action: `${baseUrl}/call?action=finished`,
+          action: `${baseUrl}/call?action=finished&conferenceName=${conferenceName}`,
         });
       dial.conference(
         {
