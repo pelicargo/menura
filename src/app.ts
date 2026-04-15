@@ -34,10 +34,13 @@ const AGENTS: Record<string, string> = JSON.parse(
   readFileSync("agents.json", { encoding: "utf-8" }),
 );
 
+// Actions handled by the system. No action usually indicates a new call
 enum Action {
-  FINISHED = "finished",
+  // Whisper is the event where the agent can press 1 to accept
   WHISPER = "whisper",
   ANSWERED = "answered",
+  // Triggered when a call ends
+  FINISHED = "finished",
 }
 
 type ActionParams = {
@@ -50,7 +53,9 @@ type ActionParams = {
   };
 };
 
+// Represents someone who answers calls
 class Agent {
+  // We don't need the call info immediately, so we can store it as a promise for when it is needed to avoid unnecessary await
   call: Promise<CallInstance> | null;
   number: string;
   name: string;
@@ -68,14 +73,16 @@ class Agent {
     const call = await this.call;
     console.log("DEBUG:", "Cleaning agent", this.toString());
     if (call) {
+      // End the call forcefully
       await twilioClient.calls(call.sid).update({ status: "completed" });
       this.call = null;
-      // 2s wait for lines to clear
+      // 2s wait for line to clear
       await new Promise((r) => setTimeout(r, 2000));
       AgentPool.emit("freed", this);
     }
   }
 
+  // Similar to actionUrl on `Conference`
   statusUrl(conference: Conference) {
     const url = new URL(ROOT_URL + "/agentStatus");
     url.searchParams.append("conferenceName", conference.id);
@@ -84,6 +91,7 @@ class Agent {
     return url.toString();
   }
 
+  // Should be self-explanitory
   async startCall(conference: Conference) {
     this.call = twilioClient.calls.create({
       to: this.number,
@@ -96,6 +104,8 @@ class Agent {
   }
 }
 
+// Handles our agents. This allows a situation where two people can call and two people can accept,
+// distributing to our free agents
 class AgentPoolManager extends EventEmitter<{
   cleanup: [Conference];
   accepted: [Conference, Agent];
@@ -107,41 +117,53 @@ class AgentPoolManager extends EventEmitter<{
     super();
     this.agents = {};
     this.queue = [];
+    // Load up our agents
     for (const k in AGENTS) {
       this.agents[k] = new Agent(k, AGENTS[k]);
     }
 
+    // Trigger whan a conference is fully connected to an agent
     this.on("accepted", (conf, agent) => {
       console.log("DEBUG:", "Conf", conf.id, "accepted by", agent.name);
+      // Remove the conference from the queue
       this.queue = this.queue.filter((c) => c.id !== conf.id);
+      // free up all attached agents that aren't the one that accepts
       const freedAgents = conf.attachedAgents.filter(
         (a) => a.number !== agent.number,
       );
+      // Leave only the one that accepted
       conf.attachedAgents = conf.attachedAgents.filter(
         (a) => a.number === agent.number,
       );
+      // End calls and run agent-level cleanup
       for (const freedAgent of freedAgents) {
         freedAgent.clean();
       }
     });
 
+    // Runs on the end of a conference
     this.on("cleanup", (conf) => {
       console.log("DEBUG:", "Running cleanup on", conf.id);
+      // Removes any lingering agents
       for (const agent of conf.attachedAgents) {
         agent.clean();
       }
+      // and the conference from the queue
       this.queue = this.queue.filter((c) => c.id !== conf.id);
     });
 
+    // When an agent is not in a call, see if there's any other calls for them to join
     this.on("freed", this.callAvailable);
   }
 
+  // Return agents who do not have a call associated to them
   public get freeAgents() {
     return Object.entries(this.agents)
       .filter(([, info]) => !info.call)
       .map(([, info]) => info);
   }
 
+  // Add conference to queue and call if available
   submitConference(conference: Conference) {
     this.queue.push(conference);
     this.callAvailable();
@@ -153,6 +175,7 @@ class AgentPoolManager extends EventEmitter<{
       // nothin' to do
       return;
     }
+    // Get the longest-waiting customer
     const current = this.queue[0];
 
     const free = this.freeAgents;
@@ -172,6 +195,7 @@ class AgentPoolManager extends EventEmitter<{
 
 const AgentPool = new AgentPoolManager();
 
+// A "Conference" is an instance of a customer calling us
 class Conference {
   // Internal ID
   id: string;
@@ -192,21 +216,26 @@ class Conference {
     activeConferences.set(this.id, this);
   }
 
+  // Unregister this conference from the system and disconnect everyone involved
   cleanup() {
     activeConferences.delete(this.id);
     AgentPool.emit("cleanup", this);
   }
 
+  // Since we carry state in URL params, this abstracts it out some to ensure it's always formed correctly
   actionUrl<T extends Action>(action: T, data: ActionParams[T]) {
     const url = new URL(`${this.baseUrl}/call`);
+    // Always include what the action is and what conference this refers to
     url.searchParams.append("conferenceName", this.id);
     url.searchParams.append("action", action);
+    // And add whatever else is needed
     for (const [k, v] of Object.entries(data)) {
       url.searchParams.append(k, v);
     }
     return url.toString();
   }
 
+  // Start the call. Logs to Slack and move the customer into a Twilio conference
   initialize(event: any) {
     const response = new twiml.VoiceResponse();
 
@@ -224,17 +253,19 @@ class Conference {
       {
         startConferenceOnEnter: true,
         endConferenceOnExit: true,
-        waitUrl: HOLD_MUSIC, // ring sound for incoming caller,
+        waitUrl: HOLD_MUSIC, // ring sound for incoming caller while they connect
         waitMethod: "GET",
       },
       this.id,
     );
 
     console.log("DEBUG: Triggering independent API calls for each agent");
+    // Add this conference into the queue for our agents
     AgentPool.submitConference(this);
     return response;
   }
 
+  // Triggered when the customer hangs up
   async finished() {
     const response = new twiml.VoiceResponse();
 
@@ -254,6 +285,7 @@ class Conference {
 
   async agentWhisper(event: any, query: ActionParams["whisper"]) {
     const response = new twiml.VoiceResponse();
+    // Fallback in case two people pick up and one doesn't get ended
     if (this.live) {
       console.log("DEBUG", "Call answered by coworker.", this.attachedAgents);
       response.say("Call answered by coworker");
@@ -261,13 +293,15 @@ class Conference {
       return response;
     }
 
-    const gather: InstanceType<typeof twiml.VoiceResponse.Gather> =
-      response.gather({
-        numDigits: 1,
-        action: this.actionUrl(Action.ANSWERED, { agentNumber: event.To }),
-        // short timeout so the "incoming agent call" loops
-        timeout: 2,
-      });
+    // Poll for "1"
+    const gather = response.gather({
+      numDigits: 1,
+      action: this.actionUrl(Action.ANSWERED, { agentNumber: event.To }),
+      // short timeout so the "incoming agent call" loops
+      timeout: 2,
+    });
+
+    // Loop
     gather.say("Incoming agent call. Press 1 to connect.");
     response.redirect(
       this.actionUrl(Action.WHISPER, {
@@ -278,6 +312,7 @@ class Conference {
     return response;
   }
 
+  // Trigger when agent presses a button during the "whisper" phase
   async agentAction(
     event: any,
     query: {
@@ -287,6 +322,7 @@ class Conference {
     const response = new twiml.VoiceResponse();
     const agent = AgentPool.getByNumber(event.To);
 
+    // Fallback if pickup collision
     if (this.live) {
       response.say("Call answered by coworker.");
       response.hangup();
@@ -299,7 +335,8 @@ class Conference {
         status: "in-progress", // Only look for active ones
         limit: 1,
       });
-      // If no active conference is found, the caller has already left :-()
+      // If no active conference is found, the caller has already left :-(
+      // This probably does not trigger due to clean up on hangup
       if (conferences.length === 0) {
         console.log("DEBUG: caller hung up before agent could join");
         response.say("I'm sorry: the caller has already hung up. Good bye!");
@@ -316,10 +353,10 @@ class Conference {
         text: `✅ Call answered by agent: ${agent}`,
       });
 
+      // Set the call as active
       this.live = true;
 
-      console.log("DEBUG: Join THIS agent to the conference");
-      console.log(`DEBUG: conferenceName = ${this.id}`);
+      console.log(`DEBUG: ${agent.name} joined ${this.id}`);
       response.dial().conference(
         {
           startConferenceOnEnter: true,
@@ -329,7 +366,6 @@ class Conference {
       );
 
       // Kill all OTHER agent calls so their phones stop ringing
-      // We look for calls to our agent numbers that are still 'queued' or 'ringing'
       console.log("DEBUG: killing other agent calls");
       AgentPool.emit("accepted", this, agent);
     } else {
@@ -351,20 +387,21 @@ const activeConferences = new Map<string, Conference>();
 // Create Twilio client for Twilio Conferences
 const twilioClient = twilio(TWILIO_SID, TWILIO_TOKEN);
 
+// Used for ending a call if the agent hangs up
 app.post("/agentStatus", async (req: Request, res: Response) => {
   const event: any = req.body;
   const { conferenceName, agentNumber } = req.query;
   const conference = activeConferences.get(conferenceName as string);
-  if (conference?.live && event?.CallStatus === "completed") {
-    // if this agent is the one on the call
-    if (
-      conference.attachedAgents.filter((x) => x.number === agentNumber)
-        .length === 1
-    ) {
-      await twilioClient.calls.get(conference.id).update({
-        status: "completed",
-      });
-    }
+  // Is the call accepted and connected, is this status update a normal hangup, and is the one hanging up the singular agent assigned
+  if (
+    conference?.live &&
+    event?.CallStatus === "completed" &&
+    conference.attachedAgents.filter((x) => x.number === agentNumber).length ===
+      1
+  ) {
+    await twilioClient.calls.get(conference.id).update({
+      status: "completed",
+    });
   }
 
   return res.send("");
@@ -383,10 +420,10 @@ app.post("/call", async (req: Request, res: Response) => {
   console.log(`DEBUG: event = ${JSON.stringify(event, null, 2)}`);
 
   try {
-    if (action === "whisper") {
+    if (action === Action.WHISPER) {
       console.log("DEBUG: Whisper Logic: agent answers");
       if (!conference) {
-        throw new Error("CRITICAL: conferenceName missing");
+        throw new Error("ERROR: conferenceName missing");
       }
 
       const response = await conference.agentWhisper(event, req.query as any);
@@ -395,7 +432,7 @@ app.post("/call", async (req: Request, res: Response) => {
     }
 
     // Agent button pressing logic
-    if (action === "answered") {
+    if (action === Action.ANSWERED) {
       console.log("DEBUG: Agent button pressing logic");
       if (!conference) {
         throw new Error("CRITICAL: conferenceName missing");
@@ -406,7 +443,7 @@ app.post("/call", async (req: Request, res: Response) => {
     }
 
     // Finished call logic
-    if (action === "finished") {
+    if (action === Action.FINISHED) {
       console.log(`DEBUG: Finished call path`);
       if (!conference) {
         throw new Error("CRITICAL: conferenceName missing");
@@ -428,8 +465,8 @@ app.post("/call", async (req: Request, res: Response) => {
       return;
     }
 
+    // Null fallback
     const response = new twiml.VoiceResponse();
-
     console.error(`DEBUG: unknown state action = ${action}`);
     res.type("text/xml").send(response.toString());
   } catch (error: unknown) {
@@ -437,8 +474,6 @@ app.post("/call", async (req: Request, res: Response) => {
     res.status(500).send("Error processing TwiML");
   }
 });
-
-process.on("unhandledRejection", console.warn);
 
 app.listen(PORT, (): void => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
