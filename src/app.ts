@@ -17,12 +17,16 @@ const app: express.Express = express();
 // Twilio sends data as URL-encoded forms
 app.use(bodyParser.urlencoded({ extended: false }));
 
-// Replace these with your actual values or process.env
 const SLACK_WEBHOOK_URL: string = getEnv("SLACK_WEBHOOK_URL");
 const PORT: number = Number(getEnv("PORT")) || 3000;
+const TWILIO_SID: string = getEnv("TWILIO_SID");
+const TWILIO_TOKEN: string = getEnv("TWILIO_TOKEN");
 const AGENTS: Record<string, string> = {
   "+15551234567": "Agent Name",
 };
+
+// Create Twilio client for Twilio Conferences
+const twilioClient = twilio(TWILIO_SID, TWILIO_TOKEN);
 
 // Endpoint for Twilio calls
 app.post("/call", async (req: Request, res: Response): Promise<void> => {
@@ -39,31 +43,76 @@ app.post("/call", async (req: Request, res: Response): Promise<void> => {
   try {
     if (action === "whisper") {
       console.log("DEBUG: Whisper Logic: agent answers");
+      const conferenceName: string =
+        (req.query.conferenceName as string) ||
+        (() => {
+          throw new Error("CRITICAL: conferenceName missing");
+        })();
       const gather: InstanceType<typeof twiml.VoiceResponse.Gather> =
         response.gather({
           numDigits: 1,
-          action: `${baseUrl}/call?action=answered&AgentNumber=${event.To}`,
-          timeout: 240,
+          action: `${baseUrl}/call?action=answered&agentNumber=${event.To}&conferenceName=${conferenceName}`,
+          // short timeout so the "incoming agent call" loops
+          timeout: 2,
         });
       gather.say("Incoming agent call. Press 1 to connect.");
-      response.hangup();
+      response.redirect(
+        `${baseUrl}/call?action=whisper&conferenceName=${conferenceName}`,
+      );
       res.type("text/xml").send(response.toString());
       return;
     }
 
     // Answered Logic (Agent pressed 1)
     if (action === "answered" && event.Digits === "1") {
-      console.log("Call connected by agent");
+      console.log("DEBUG: Call connected by agent");
+
+      const conferenceName: string =
+        (req.query.conferenceName as string) ||
+        (() => {
+          throw new Error("CRITICAL: conferenceName missing");
+        })();
+      const agentNumber: string =
+        (req.query.agentNumber as string) ||
+        (() => {
+          throw new Error("CRITICAL: agentNumber missing");
+        })();
+
       await axios.post(SLACK_WEBHOOK_URL, {
-        text: `✅ Call answered by agent: ${event.AgentNumber}`,
+        text: `✅ Call answered by agent: ${agentNumber}`,
       });
+
+      console.log("DEBUG: Join THIS agent to the conference");
+      console.log(`DEBUG: conferenceName = ${conferenceName}`);
+      response.dial().conference(
+        {
+          startConferenceOnEnter: true,
+          endConferenceOnExit: false, // Agent leaving doesn't kill the call
+        },
+        conferenceName,
+      );
+
+      // Kill all OTHER agent calls so their phones stop ringing
+      // We look for calls to our agent numbers that are still 'queued' or 'ringing'
+      console.log("DEBUG: killing other agent calls");
+
+      const activeCalls = await twilioClient.calls.list({ status: "ringing" });
+
+      for (const call of activeCalls) {
+        // Only cancel calls that were part of this specific conference attempt
+        // (You'd ideally track these SIDs in a small cache or check the 'To' number)
+        if (Object.keys(AGENTS).includes(call.to) && call.to !== agentNumber) {
+          await twilioClient.calls(call.sid).update({ status: "completed" });
+        }
+      }
+
       res.type("text/xml").send(response.toString());
       return;
     }
 
-    // Finished/Missed call logic
+    // Finished call logic
     if (action === "finished") {
-      console.log(`DEBUG: missed call path`);
+      console.log(`DEBUG: Finished call path`);
       const status = (event.DialCallStatus || "").toLowerCase();
       console.log(`DEBUG: status = ${status}`);
 
@@ -89,27 +138,45 @@ app.post("/call", async (req: Request, res: Response): Promise<void> => {
       }
     }
 
-    // If it's a fresh call (no DialStatus yet)
+    // Fresh call (no DialStatus yet)
     if (!event.DialStatus) {
       console.log("DEBUG: Initial Caller / Dial Logic");
       await axios.post(SLACK_WEBHOOK_URL, {
         text: `☎️ Incoming call to number from: ${event.From}`,
       });
-      const dial: InstanceType<typeof twiml.VoiceResponse.Dial> = response.dial(
-        {
-          timeout: 240,
+
+      console.log(
+        "DEBUG: Put the incoming caller into a unique Conference room",
+      );
+      const conferenceName: string = `Conf_${event.CallSid}`;
+      console.log(`DEBUG: conferenceName = ${conferenceName}`);
+      const dial: InstanceType<typeof twilio.twiml.VoiceResponse.Dial> =
+        response.dial({
+          // This tells Twilio: "When this Dial is done, call this URL"
           action: `${baseUrl}/call?action=finished`,
+        });
+      dial.conference(
+        {
+          startConferenceOnEnter: true,
+          endConferenceOnExit: true,
+          waitUrl: "http://api.twilio.com/cowbell.mp3", // ring sound for incoming caller
         },
+        conferenceName,
       );
 
-      Object.keys(AGENTS).forEach((num: string): void => {
-        dial.number(
-          {
-            url: `${baseUrl}/call?action=whisper`,
-          },
-          num,
-        );
+      console.log("DEBUG: Triggering independent API calls for each agent");
+      // This is what keeps other agents ringing if one goes to voicemail
+      Object.keys(AGENTS).forEach((num: string) => {
+        twilioClient.calls
+          .create({
+            to: num,
+            from: event.To,
+            url: `${baseUrl}/call?action=whisper&conferenceName=${conferenceName}`,
+          })
+          .catch((err) => console.error(`Failed to dial agent ${num}:`, err));
       });
+
+      // IMMEDIATELY send TwiML back so the caller enters the room
       res.type("text/xml").send(response.toString());
       return;
     }
