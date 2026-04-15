@@ -77,6 +77,22 @@ app.post("/call", async (req: Request, res: Response): Promise<void> => {
       if (event.Digits === "1") {
         console.log("DEBUG: Call connected by agent by pressing 1");
 
+        console.log("DEBUG: Checking if the caller is still there");
+        const conferences = await twilioClient.conferences.list({
+          friendlyName: conferenceName,
+          status: "in-progress", // Only look for active ones
+          limit: 1,
+        });
+        // If no active conference is found, the caller has already left :-()
+        if (conferences.length === 0) {
+          answeredConferences.delete(conferenceName);
+          console.log("DEBUG: caller hung up before agent could join");
+          response.say("I'm sorry: the caller has already hung up. Good bye!");
+          response.hangup();
+          res.type("text/xml").send(response.toString());
+          return;
+        }
+
         const agentNumber: string =
           (req.query.agentNumber as string) ||
           (() => {
