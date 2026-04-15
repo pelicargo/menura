@@ -66,53 +66,69 @@ app.post("/call", async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // Answered Logic (Agent pressed 1)
-    if (action === "answered" && event.Digits === "1") {
-      console.log("DEBUG: Call connected by agent");
-
+    // Agent button pressing logic
+    if (action === "answered") {
+      console.log("DEBUG: Agent button pressing logic");
       const conferenceName: string =
         (req.query.conferenceName as string) ||
         (() => {
           throw new Error("CRITICAL: conferenceName missing");
         })();
-      const agentNumber: string =
-        (req.query.agentNumber as string) ||
-        (() => {
-          throw new Error("CRITICAL: agentNumber missing");
-        })();
+      if (event.Digits === "1") {
+        console.log("DEBUG: Call connected by agent by pressing 1");
 
-      await axios.post(SLACK_WEBHOOK_URL, {
-        text: `✅ Call answered by agent: ${agentNumber}`,
-      });
+        const agentNumber: string =
+          (req.query.agentNumber as string) ||
+          (() => {
+            throw new Error("CRITICAL: agentNumber missing");
+          })();
 
-      answeredConferences.add(conferenceName);
+        await axios.post(SLACK_WEBHOOK_URL, {
+          text: `✅ Call answered by agent: ${agentNumber}`,
+        });
 
-      console.log("DEBUG: Join THIS agent to the conference");
-      console.log(`DEBUG: conferenceName = ${conferenceName}`);
-      response.dial().conference(
-        {
-          startConferenceOnEnter: true,
-          endConferenceOnExit: false, // Agent leaving doesn't kill the call
-        },
-        conferenceName,
-      );
+        answeredConferences.add(conferenceName);
 
-      // Kill all OTHER agent calls so their phones stop ringing
-      // We look for calls to our agent numbers that are still 'queued' or 'ringing'
-      console.log("DEBUG: killing other agent calls");
+        console.log("DEBUG: Join THIS agent to the conference");
+        console.log(`DEBUG: conferenceName = ${conferenceName}`);
+        response.dial().conference(
+          {
+            startConferenceOnEnter: true,
+            endConferenceOnExit: false, // Agent leaving doesn't kill the call
+          },
+          conferenceName,
+        );
 
-      const activeCalls = await twilioClient.calls.list({ status: "ringing" });
+        // Kill all OTHER agent calls so their phones stop ringing
+        // We look for calls to our agent numbers that are still 'queued' or 'ringing'
+        console.log("DEBUG: killing other agent calls");
 
-      for (const call of activeCalls) {
-        // Only cancel calls that were part of this specific conference attempt
-        // (You'd ideally track these SIDs in a small cache or check the 'To' number)
-        if (Object.keys(AGENTS).includes(call.to) && call.to !== agentNumber) {
-          await twilioClient.calls(call.sid).update({ status: "completed" });
+        const activeCalls = await twilioClient.calls.list({
+          status: "ringing",
+        });
+
+        for (const call of activeCalls) {
+          // Only cancel calls that were part of this specific conference attempt
+          // (You'd ideally track these SIDs in a small cache or check the 'To' number)
+          if (
+            Object.keys(AGENTS).includes(call.to) &&
+            call.to !== agentNumber
+          ) {
+            await twilioClient.calls(call.sid).update({ status: "completed" });
+          }
         }
-      }
 
-      res.type("text/xml").send(response.toString());
-      return;
+        res.type("text/xml").send(response.toString());
+        return;
+      } else {
+        console.log("DEBUG: Agent pressed not-1");
+        // Redirect back to the whisper logic to repeat the prompt
+        response.redirect(
+          `${baseUrl}/call?action=whisper&conferenceName=${conferenceName}`,
+        );
+        res.type("text/xml").send(response.toString());
+        return;
+      }
     }
 
     // Finished call logic
