@@ -1,0 +1,36 @@
+{
+  "name": "twilio-groupline",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Twilio Group call server",
+  "main": "src/app.ts",
+  "scripts": {
+    "start": "node --env-file .env ./dist/app.js",
+    "dev": "tsx --watch ./src/app.ts --env-file .env",
+    "dev:debug": "pnpm dev --inspect",
+    "build": "tsc -p tsconfig.json",
+    "lint": "pnpm exec biome check .",
+    "format": "pnpm exec biome check --write .",
+    "format:ci": "pnpm exec biome ci . --diagnostic-level=error",
+    "test": "glob test/**/*.test.ts -c 'tsx --test'",
+    "test:debug": "pnpm test -- --inspect-wait"
+  },
+  "author": "Pelicargo Inc and contributors",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.15.0",
+    "body-parser": "^2.2.2",
+    "express": "^5.2.1",
+    "twilio": "^5.13.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.12",
+    "@types/body-parser": "^1.19.6",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.0",
+    "glob": "^13.0.6",
+    "prettier": "^3.8.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  }
+}
