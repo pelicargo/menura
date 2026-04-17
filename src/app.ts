@@ -28,7 +28,6 @@ const PORT = Number(getEnv("PORT")) || 3000;
 const TWILIO_SID = getEnv("TWILIO_SID");
 const TWILIO_TOKEN = getEnv("TWILIO_TOKEN");
 const HOLD_MUSIC = getEnv("HOLD_MUSIC");
-const ROOT_URL = getEnv("ROOT_URL");
 const AGENTS: Record<string, string> = JSON.parse(
   readFileSync("agents.json", { encoding: "utf-8" }),
 );
@@ -455,8 +454,16 @@ app.post("/agentStatus", async (req: Request, res: Response) => {
   return res.send("");
 });
 
+const buildUrl = (req: Request) => {
+  const proto = req.headers?.["x-forwarded-proto"] ?? req.protocol;
+  const host =
+    req.headers?.["x-forwarded-host"] ?? req.headers?.["host"] ?? req.host;
+  return new URL(`${proto}://${host}`).toString();
+};
+
 // Endpoint for Twilio calls
 app.post("/call", async (req: Request, res: Response) => {
+  const baseUrl = buildUrl(req);
   const event: any = req.body;
   const rawAction = req.query["action"];
   const action = typeof rawAction === "string" ? rawAction : "";
@@ -526,7 +533,7 @@ app.post("/call", async (req: Request, res: Response) => {
     // Fresh call (no DialStatus yet)
     if (!event.DialStatus) {
       // Start a call
-      const conference = new Conference(ROOT_URL, event.CallSid, event.To);
+      const conference = new Conference(baseUrl, event.CallSid, event.To);
       const resp = conference.initialize(event);
 
       // IMMEDIATELY send TwiML back so the caller enters the room
