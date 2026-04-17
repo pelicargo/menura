@@ -210,6 +210,7 @@ class Conference {
   live: boolean;
   callerNumber: string;
   answeringMachineCallback?: ReturnType<typeof setTimeout>;
+  // Whether or not this is in voicemail
   voiceMail: boolean;
 
   constructor(baseUrl: string, conferenceName: string, callerNumber: string) {
@@ -503,6 +504,7 @@ app.post("/call", async (req: Request, res: Response) => {
 
     if (action === Action.CONFERENCE_STATUS) {
       if (conference) {
+        // Log the id of the conference (twilio's concept)
         conference.internalConferenceId = event["ConferenceSid"];
       }
       res.send();
@@ -511,6 +513,7 @@ app.post("/call", async (req: Request, res: Response) => {
 
     if (action === Action.RECORDING) {
       if (conference) {
+        // If we get a recording, end the call for once and all
         const response = await conference.finished(true, event["RecordingUrl"]);
 
         res.type("text/xml").send(response.toString());
@@ -541,6 +544,7 @@ app.post("/call", async (req: Request, res: Response) => {
   }
 });
 
+// Proxies recordings from Twilio
 app.get("/recording", async (req, res) => {
   const url = new URL(req.query["url"] as string);
   if (url.host !== "api.twilio.com") {
@@ -553,6 +557,7 @@ app.get("/recording", async (req, res) => {
     },
     responseType: "arraybuffer",
   });
+  // Try to avoid malicious usage
   if (resp.status !== 200 || resp.headers["content-type"] !== "audio/mpeg") {
     return res.status(403).send();
   }
