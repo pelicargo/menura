@@ -20,7 +20,6 @@ function getEnv(name: string): string {
 }
 
 const app: express.Express = express();
-
 // Twilio sends data as URL-encoded forms
 app.use(bodyParser.urlencoded({ extended: false }));
 
@@ -41,6 +40,8 @@ enum Action {
   ANSWERED = "answered",
   // Triggered when a call ends
   FINISHED = "finished",
+  CONFERENCE_STATUS = "conferenceStatus",
+  RECORDING = "recording",
 }
 
 type ActionParams = {
@@ -51,6 +52,8 @@ type ActionParams = {
   [Action.ANSWERED]: {
     agentNumber: string;
   };
+  [Action.CONFERENCE_STATUS]: {};
+  [Action.RECORDING]: {};
 };
 
 // Represents someone who answers calls
@@ -84,7 +87,7 @@ class Agent {
 
   // Similar to actionUrl on `Conference`
   statusUrl(conference: Conference) {
-    const url = new URL(ROOT_URL + "/agentStatus");
+    const url = new URL(conference.baseUrl + "/agentStatus");
     url.searchParams.append("conferenceName", conference.id);
     url.searchParams.append("agentNumber", this.number);
 
@@ -143,7 +146,7 @@ class AgentPoolManager extends EventEmitter<{
 
     // Runs on the end of a conference
     this.on("cleanup", (conf) => {
-      console.log("DEBUG:", "Running cleanup on", conf.id);
+      console.log("DEBUG:", "Running agent cleanup on", conf.id);
       // Removes any lingering agents
       for (const agent of conf.attachedAgents) {
         agent.clean();
@@ -199,11 +202,15 @@ const AgentPool = new AgentPoolManager();
 class Conference {
   // Internal ID
   id: string;
+  // Refers to the conference itself
+  internalConferenceId?: string;
   baseUrl: string;
   attachedAgents: Agent[];
   // Is an agent connected to the client?
   live: boolean;
   callerNumber: string;
+  answeringMachineCallback?: ReturnType<typeof setTimeout>;
+  voiceMail: boolean;
 
   constructor(baseUrl: string, conferenceName: string, callerNumber: string) {
     this.id = conferenceName;
@@ -211,6 +218,8 @@ class Conference {
     this.attachedAgents = [];
     this.live = false;
     this.callerNumber = callerNumber;
+    this.voiceMail = false;
+    this.internalConferenceId = undefined;
     console.log(`DEBUG: New conference = ${this.id}`);
     // Register self in global state
     activeConferences.set(this.id, this);
@@ -218,6 +227,8 @@ class Conference {
 
   // Unregister this conference from the system and disconnect everyone involved
   cleanup() {
+    clearTimeout(this.answeringMachineCallback);
+
     activeConferences.delete(this.id);
     AgentPool.emit("cleanup", this);
   }
@@ -255,8 +266,16 @@ class Conference {
         endConferenceOnExit: true,
         waitUrl: HOLD_MUSIC, // ring sound for incoming caller while they connect
         waitMethod: "GET",
+        statusCallback: this.actionUrl(Action.CONFERENCE_STATUS, {}),
+        statusCallbackEvent: ["start", "join"],
       },
       this.id,
+    );
+
+    // send to the answering machine in 30 seconds
+    this.answeringMachineCallback = setTimeout(
+      this.answeringMachine.bind(this),
+      30 * 1000,
     );
 
     console.log("DEBUG: Triggering independent API calls for each agent");
@@ -265,17 +284,45 @@ class Conference {
     return response;
   }
 
+  async answeringMachine() {
+    if (!this.live && this.internalConferenceId) {
+      console.log("DEBUG: Sending to voicemail:", this.id);
+      this.voiceMail = true;
+
+      const response = new twiml.VoiceResponse();
+      response.say(
+        "Unfortunately, our agents are busy at this time. Please leave a message on the beep.",
+      );
+      response.record({
+        action: this.actionUrl(Action.RECORDING, {}),
+        playBeep: true,
+      });
+      // Stop attempting to ring
+      AgentPool.emit("cleanup", this);
+
+      await twilioClient.calls.get(this.id).update({
+        twiml: response,
+      });
+    }
+  }
+
   // Triggered when the customer hangs up
-  async finished() {
+  async finished(bypass = false, url = "") {
     const response = new twiml.VoiceResponse();
+    if (this.voiceMail && !bypass) {
+      return response;
+    }
 
     if (this.live) {
       await axios.post(SLACK_WEBHOOK_URL, {
         text: `✅ Finished call from ${this.callerNumber}`,
       });
     } else {
+      const recording = new URL(this.baseUrl + "/recording");
+      recording.searchParams.set("url", url);
+
       await axios.post(SLACK_WEBHOOK_URL, {
-        text: `❌ Missed call from ${this.callerNumber}`,
+        text: `❌ Missed call from ${this.callerNumber} ${url ? `<${recording.toString()}|Voice Message>` : ""}`,
       });
     }
     this.cleanup();
@@ -416,7 +463,7 @@ app.post("/call", async (req: Request, res: Response) => {
   const conferenceName = req.query?.conferenceName as string;
   const conference = activeConferences.get(conferenceName);
 
-  console.log(`DEBUG: action = ${action}`);
+  console.log(`DEBUG: params = `, req.query);
   console.log(`DEBUG: event = ${JSON.stringify(event, null, 2)}`);
 
   try {
@@ -448,9 +495,28 @@ app.post("/call", async (req: Request, res: Response) => {
       if (!conference) {
         throw new Error("CRITICAL: conferenceName missing");
       }
-      const response = await conference.finished();
+      const response = await conference.finished(false);
 
       res.type("text/xml").send(response.toString());
+      return;
+    }
+
+    if (action === Action.CONFERENCE_STATUS) {
+      if (conference) {
+        conference.internalConferenceId = event["ConferenceSid"];
+      }
+      res.send();
+      return;
+    }
+
+    if (action === Action.RECORDING) {
+      if (conference) {
+        const response = await conference.finished(true, event["RecordingUrl"]);
+
+        res.type("text/xml").send(response.toString());
+      } else {
+        res.send();
+      }
       return;
     }
 
@@ -473,6 +539,25 @@ app.post("/call", async (req: Request, res: Response) => {
     console.error(error);
     res.status(500).send("Error processing TwiML");
   }
+});
+
+app.get("/recording", async (req, res) => {
+  const url = new URL(req.query["url"] as string);
+  if (url.host !== "api.twilio.com") {
+    return res.status(403).send();
+  }
+  const resp = await axios.get(url.toString() + ".mp3", {
+    auth: {
+      username: TWILIO_SID,
+      password: TWILIO_TOKEN,
+    },
+    responseType: "arraybuffer",
+  });
+  if (resp.status !== 200 || resp.headers["content-type"] !== "audio/mpeg") {
+    return res.status(403).send();
+  }
+
+  res.status(resp.status).contentType("audio/mpeg").send(resp.data);
 });
 
 app.listen(PORT, (): void => {
