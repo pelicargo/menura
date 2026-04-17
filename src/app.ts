@@ -463,7 +463,7 @@ const buildUrl = (req: Request) => {
 
 // Endpoint for Twilio calls
 app.post("/call", async (req: Request, res: Response) => {
-  const baseUrl = buildUrl(req);
+  const baseUrl = process.env.ROOT_URL ?? buildUrl(req);
   const event: any = req.body;
   const rawAction = req.query["action"];
   const action = typeof rawAction === "string" ? rawAction : "";
