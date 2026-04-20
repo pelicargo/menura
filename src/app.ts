@@ -436,6 +436,17 @@ const twilioClient = twilio(TWILIO_SID, TWILIO_TOKEN);
 
 // Used for ending a call if the agent hangs up
 app.post("/agentStatus", async (req: Request, res: Response) => {
+  const baseUrl = new URL(process.env.ROOT_URL ?? buildUrl(req));
+  if (
+    !twilio.validateIncomingRequest(req, TWILIO_TOKEN, {
+      host: baseUrl.host,
+      protocol: baseUrl.protocol,
+      url: baseUrl + req.url,
+    })
+  ) {
+    res.sendStatus(403);
+    return;
+  }
   const event: any = req.body;
   const { conferenceName, agentNumber } = req.query;
   const conference = activeConferences.get(conferenceName as string);
@@ -463,7 +474,18 @@ const buildUrl = (req: Request) => {
 
 // Endpoint for Twilio calls
 app.post("/call", async (req: Request, res: Response) => {
-  const baseUrl = process.env.ROOT_URL ?? buildUrl(req);
+  const baseUrl = new URL(process.env.ROOT_URL ?? buildUrl(req));
+
+  if (
+    !twilio.validateIncomingRequest(req, TWILIO_TOKEN, {
+      host: baseUrl.host,
+      protocol: baseUrl.protocol,
+      url: baseUrl + req.url,
+    })
+  ) {
+    res.sendStatus(403);
+    return;
+  }
   const event: any = req.body;
   const rawAction = req.query["action"];
   const action = typeof rawAction === "string" ? rawAction : "";
@@ -533,7 +555,11 @@ app.post("/call", async (req: Request, res: Response) => {
     // Fresh call (no DialStatus yet)
     if (!event.DialStatus) {
       // Start a call
-      const conference = new Conference(baseUrl, event.CallSid, event.To);
+      const conference = new Conference(
+        baseUrl.toString(),
+        event.CallSid,
+        event.To,
+      );
       const resp = conference.initialize(event);
 
       // IMMEDIATELY send TwiML back so the caller enters the room
