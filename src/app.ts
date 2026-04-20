@@ -441,7 +441,7 @@ app.post("/agentStatus", async (req: Request, res: Response) => {
     !twilio.validateIncomingRequest(req, TWILIO_TOKEN, {
       host: baseUrl.host,
       protocol: baseUrl.protocol,
-      url: baseUrl + req.url,
+      url: baseUrl.toString().replace(/\/$/, "") + req.url,
     })
   ) {
     res.sendStatus(403);
@@ -480,7 +480,7 @@ app.post("/call", async (req: Request, res: Response) => {
     !twilio.validateIncomingRequest(req, TWILIO_TOKEN, {
       host: baseUrl.host,
       protocol: baseUrl.protocol,
-      url: baseUrl + req.url,
+      url: baseUrl.toString().replace(/\/$/, "") + req.url,
     })
   ) {
     res.sendStatus(403);
