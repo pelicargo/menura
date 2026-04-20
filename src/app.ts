@@ -556,7 +556,7 @@ app.post("/call", async (req: Request, res: Response) => {
     if (!event.DialStatus) {
       // Start a call
       const conference = new Conference(
-        baseUrl.toString(),
+        baseUrl.toString().replace(/\/$/, ""),
         event.CallSid,
         event.To,
       );
