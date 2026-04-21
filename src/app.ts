@@ -436,7 +436,7 @@ const twilioClient = twilio(TWILIO_SID, TWILIO_TOKEN);
 
 // Used for ending a call if the agent hangs up
 app.post("/agentStatus", async (req: Request, res: Response) => {
-  const baseUrl = new URL(process.env.ROOT_URL ?? buildUrl(req));
+  const baseUrl = new URL(process.env.ROOT_URL || buildUrl(req));
   if (
     !twilio.validateIncomingRequest(req, TWILIO_TOKEN, {
       host: baseUrl.host,
