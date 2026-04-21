@@ -20,6 +20,10 @@ function getEnv(name: string): string {
 }
 
 const app: express.Express = express();
+
+// Allow X-Forwarded-* headers
+app.set('trust proxy', true);
+
 // Twilio sends data as URL-encoded forms
 app.use(bodyParser.urlencoded({ extended: false }));
 
