@@ -22,7 +22,7 @@ function getEnv(name: string): string {
 const app: express.Express = express();
 
 // Allow X-Forwarded-* headers
-app.set('trust proxy', true);
+app.set("trust proxy", true);
 
 // Twilio sends data as URL-encoded forms
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -478,7 +478,7 @@ const buildUrl = (req: Request) => {
 
 // Endpoint for Twilio calls
 app.post("/call", async (req: Request, res: Response) => {
-  const baseUrl = new URL(process.env.ROOT_URL ?? buildUrl(req));
+  const baseUrl = new URL(process.env.ROOT_URL || buildUrl(req));
 
   if (
     !twilio.validateIncomingRequest(req, TWILIO_TOKEN, {
