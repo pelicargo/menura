@@ -101,7 +101,7 @@ class Agent {
   async startCall(conference: Conference) {
     this.call = twilioClient.calls.create({
       to: this.number,
-      from: conference.callerNumber,
+      from: conference.calledNumber,
       url: conference.actionUrl(Action.WHISPER, {
         agentNumber: this.number,
       }),
@@ -211,16 +211,23 @@ class Conference {
   attachedAgents: Agent[];
   // Is an agent connected to the client?
   live: boolean;
+  calledNumber: string;
   callerNumber: string;
   answeringMachineCallback?: ReturnType<typeof setTimeout>;
   // Whether or not this is in voicemail
   voiceMail: boolean;
 
-  constructor(baseUrl: string, conferenceName: string, callerNumber: string) {
+  constructor(
+    baseUrl: string,
+    conferenceName: string,
+    calledNumber: string,
+    callerNumber: string,
+  ) {
     this.id = conferenceName;
     this.baseUrl = baseUrl;
     this.attachedAgents = [];
     this.live = false;
+    this.calledNumber = calledNumber;
     this.callerNumber = callerNumber;
     this.voiceMail = false;
     this.internalConferenceId = undefined;
@@ -563,6 +570,7 @@ app.post("/call", async (req: Request, res: Response) => {
         baseUrl.toString().replace(/\/$/, ""),
         event.CallSid,
         event.To,
+        event.From,
       );
       const resp = conference.initialize(event);
 
