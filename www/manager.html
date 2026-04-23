@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Menura Manager</title>
+
+    <style>
+      .agentFields {
+        display: flex;
+        flex-direction: row;
+        gap: 1em;
+      }
+
+      .days {
+        display: flex;
+        flex-direction: row;
+        gap: 4px;
+      }
+
+      .day {
+        width: 200px;
+        border: 1px solid black;
+        padding: 0.25em;
+      }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      import {
+        html,
+        render,
+        createContext,
+        useState,
+        useContext,
+        useEffect,
+      } from "https://esm.sh/htm/preact/standalone";
+
+      const DAYS = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+      ];
+
+      const State = createContext({});
+
+      const DayEditor = ({}) => {};
+
+      const AgentEditor = ({ agent }) => {
+        const { teams } = useContext(State);
+
+        return html`
+          <form class="agentEditor">
+            <div class="agentFields">
+              <div>
+                <label>Account enabled: </label>
+                <input type="checkbox" value=${agent["enabled"]} />
+              </div>
+              <div>
+                <label>Prefix#: </label>
+                <input
+                  name="prefix"
+                  value=${agent["prefix"]}
+                  style="width: 40px"
+                />
+              </div>
+              <div>
+                <label>Label: </label>
+                <input name="label" value=${agent["label"]} />
+              </div>
+              <div>
+                <label>Team: </label>
+                <select name="team">
+                  ${teams?.map(
+                    (team) => html`<option value=${team}>${team}</option>`,
+                  )}
+                </select>
+              </div>
+              <div>
+                <label>Timezone: </label>
+                <select>
+                  ${Intl.supportedValuesOf("timeZone").map(
+                    (tz) =>
+                      html`<option
+                        value=${tz}
+                        selected=${agent["timeZone"] === tz}
+                      >
+                        ${tz}
+                      </option>`,
+                  )}
+                </select>
+              </div>
+              <div>
+                <label>Slack ID: </label>
+                <input name="label" value=${agent["slackId"]} />
+              </div>
+            </div>
+            <div class="days">
+              ${DAYS.map((day) => {
+                return html`
+                <div class="day">
+                    <span>${day}</span>
+                    
+                </day>`;
+              })}
+            </div>
+          </form>
+        `;
+      };
+
+      const AgentDisplay = () => {
+        const { agents } = useContext(State);
+
+        return html`<div>
+          ${Object.entries(agents ?? {}).map(([number, info]) => {
+            return html`
+              <details>
+                <summary>${number} - ${info["label"]}</summary>
+                <${AgentEditor} agent=${info} />
+              </details>
+            `;
+          })}
+        </div>`;
+      };
+
+      const App = () => {
+        const [agents, setAgents] = useState();
+        const [teams, setTeams] = useState();
+
+        useEffect(() => {
+          (async () => {
+            const req = await fetch("agents");
+            setAgents(await req.json());
+            const teamsReq = await fetch("teams");
+            setTeams(await teamsReq.json());
+          })();
+        }, []);
+
+        return html`<${State.Provider} value=${{
+          agents,
+          teams,
+        }}>
+                <${AgentDisplay} />
+            </${State.Provider}>`;
+      };
+
+      render(html`<${App} name="World" />`, document.body);
+    </script>
+  </body>
+</html>

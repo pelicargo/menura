@@ -6,15 +6,18 @@ import axios from "axios";
 import { CallInstance } from "twilio/lib/rest/api/v2010/account/call.js";
 import { config } from "dotenv";
 import { EventEmitter } from "events";
+import { scryptSync } from "crypto";
+import { z } from "zod";
+import { tz } from "@date-fns/tz";
 
 config();
 
 const { twiml } = twilio;
 
-function getEnv(name: string): string {
+function getEnv(name: string, extra = ""): string {
   const value = process.env[name];
   if (!value) {
-    throw new Error(`Environment variable ${name} is missing!`);
+    throw new Error(`Environment variable ${name} is missing! ${extra}`);
   }
   return value;
 }
@@ -32,9 +35,47 @@ const PORT = Number(getEnv("PORT")) || 3000;
 const TWILIO_SID = getEnv("TWILIO_SID");
 const TWILIO_TOKEN = getEnv("TWILIO_TOKEN");
 const HOLD_MUSIC = getEnv("HOLD_MUSIC");
+const ADMIN_PASS = getEnv("ADMIN_PASS");
+const TEAMS = getEnv("TEAMS")
+  .split(",")
+  .map((x) => x.trim());
+
+const DAYS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+const agentSchema = z.object({
+  label: z.string(),
+  prefix: z.string().regex(/^[0-9]{4}$/),
+  team: z.string(),
+  enabled: z.boolean(),
+  timeZone: z.string(),
+  slackId: z.string(),
+  hours: z.array(
+    z.object({
+      start: z.number().min(0).max(24),
+      end: z.number().min(0).max(24),
+      day: z.number().max(6).min(0),
+    }),
+  ),
+});
+
 const AGENTS: Record<string, string> = JSON.parse(
   readFileSync("agents.json", { encoding: "utf-8" }),
 );
+
+const validatePassword = (password: string) => {
+  const [goodHash, salt] = ADMIN_PASS.split("$");
+  const passHash = scryptSync(password, salt, 32).toString("hex");
+  // Primitivie comparison, no need for timing safe
+  return goodHash === passHash;
+};
 
 // Actions handled by the system. No action usually indicates a new call
 enum Action {
@@ -609,6 +650,37 @@ app.get("/recording", async (req, res) => {
 
   res.status(resp.status).contentType("audio/mpeg").send(resp.data);
 });
+
+const adminRoutes = express.Router();
+
+// Bless https://stackoverflow.com/a/33905671
+adminRoutes.use((req, res, next) => {
+  const b64auth = (req.headers.authorization || "").split(" ")[1] || "";
+  const [login, password] = Buffer.from(b64auth, "base64")
+    .toString()
+    .split(":");
+  if (login && password && login === "menura" && validatePassword(password)) {
+    return next();
+  }
+  res.set("WWW-Authenticate", 'Basic realm="401"'); // change this
+  res.status(401).send("Authentication required."); // custom message
+});
+
+adminRoutes.get("/agents", async (_, res) => {
+  res.json(AGENTS);
+});
+
+adminRoutes.get("/teams", async (_, res) => {
+  res.json(TEAMS);
+});
+
+adminRoutes.get("/manager", async (_, res) => {
+  res.sendFile("manager.html", {
+    root: "www",
+  });
+});
+
+app.use("/admin", adminRoutes);
 
 app.listen(PORT, (): void => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);

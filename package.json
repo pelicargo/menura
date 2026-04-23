@@ -13,16 +13,20 @@
     "format": "pnpm exec biome check --write .",
     "format:ci": "pnpm exec biome ci . --diagnostic-level=error",
     "test": "glob test/**/*.test.ts -c 'tsx --test'",
-    "test:debug": "pnpm test -- --inspect-wait"
+    "test:debug": "pnpm test -- --inspect-wait",
+    "pwgen": "node -e 'let c = require(`crypto`); let [pass, salt] = [c.randomBytes(32).toString(`base64url`), c.randomBytes(16).toString(`hex`)]; console.log(`Password: ${pass}\nHash: ${c.scryptSync(pass, salt, 32).toString(`hex`)}\\$${salt}`)'"
   },
   "author": "Pelicargo Inc and contributors",
   "license": "MIT",
   "dependencies": {
+    "@date-fns/tz": "1.4.1",
     "axios": "1.15.0",
     "body-parser": "2.2.2",
+    "date-fns": "4.1.0",
     "dotenv": "17.4.2",
     "express": "5.2.1",
-    "twilio": "5.13.1"
+    "twilio": "5.13.1",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.12",
