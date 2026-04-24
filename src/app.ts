@@ -6,6 +6,7 @@ import axios from "axios";
 import { CallInstance } from "twilio/lib/rest/api/v2010/account/call.js";
 import { config } from "dotenv";
 import { EventEmitter } from "events";
+import { PhoneNumberInstance } from "twilio/lib/rest/lookups/v2/phoneNumber.js";
 
 config();
 
@@ -217,6 +218,8 @@ class Conference {
   // Whether or not this is in voicemail
   voiceMail: boolean;
 
+  callerId?: PhoneNumberInstance;
+
   constructor(
     baseUrl: string,
     conferenceName: string,
@@ -231,6 +234,7 @@ class Conference {
     this.callerNumber = callerNumber;
     this.voiceMail = false;
     this.internalConferenceId = undefined;
+    this.callerId = undefined;
     console.log(`DEBUG: New conference = ${this.id}`);
     // Register self in global state
     activeConferences.set(this.id, this);
@@ -257,13 +261,35 @@ class Conference {
     return url.toString();
   }
 
+  async fetchCallerId() {
+    try {
+      this.callerId = await twilioClient.lookups.v2
+        .phoneNumbers(this.callerNumber)
+        .fetch({ fields: "caller_name" });
+    } catch (e) {
+      console.error("[ERROR]: Couldn't get caller id: ", e);
+    }
+  }
+
+  identifyCaller() {
+    return (
+      (this.callerId?.callerName?.callerName ?? "") +
+      " " +
+      (this.callerId?.nationalFormat
+        ? this.callerId?.callingCountryCode +
+          " " +
+          this.callerId?.nationalFormat
+        : this.callerNumber)
+    ).trim();
+  }
+
   // Start the call. Logs to Slack and move the customer into a Twilio conference
   initialize(event: any) {
     const response = new twiml.VoiceResponse();
 
     console.log("DEBUG: Initial Caller / Dial Logic");
     axios.post(SLACK_WEBHOOK_URL, {
-      text: `☎️ Incoming call to number from: ${event.From}`,
+      text: `☎️ Incoming call to number from: ${this.identifyCaller()}`,
     });
 
     console.log("DEBUG: Put the incoming caller into a unique Conference room");
@@ -298,6 +324,9 @@ class Conference {
   async answeringMachine() {
     if (!this.live && this.internalConferenceId) {
       console.log("DEBUG: Sending to voicemail:", this.id);
+      axios.post(SLACK_WEBHOOK_URL, {
+        text: `❌ Caller sent to voicemail: [${this.identifyCaller()}]`,
+      });
       this.voiceMail = true;
 
       const response = new twiml.VoiceResponse();
@@ -326,14 +355,14 @@ class Conference {
 
     if (this.live) {
       await axios.post(SLACK_WEBHOOK_URL, {
-        text: `✅ Finished call from ${this.callerNumber}`,
+        text: `✅ Finished call from [${this.identifyCaller()}]`,
       });
     } else {
       const recording = new URL(this.baseUrl + "/recording");
       recording.searchParams.set("url", url);
 
       await axios.post(SLACK_WEBHOOK_URL, {
-        text: `❌ Missed call from ${this.callerNumber} ${url ? `<${recording.toString()}|Voice Message>` : ""}`,
+        text: `❌ Missed call from [${this.identifyCaller()}] ${url ? `| Voicemail URL:${recording.toString()}` : ""}`,
       });
     }
     this.cleanup();
@@ -360,7 +389,9 @@ class Conference {
     });
 
     // Loop
-    gather.say("Incoming agent call. Press 1 to connect.");
+    gather.say(
+      `Incoming call from ${this.identifyCaller()}. Press 1 to connect.`,
+    );
     response.redirect(
       this.actionUrl(Action.WHISPER, {
         agentNumber: query.agentNumber,
@@ -400,6 +431,7 @@ class Conference {
         response.say("I'm sorry: the caller has already hung up. Good bye!");
         response.hangup();
         this.cleanup();
+
         return response;
       }
 
@@ -408,7 +440,7 @@ class Conference {
       }
 
       await axios.post(SLACK_WEBHOOK_URL, {
-        text: `✅ Call answered by agent: ${agent}`,
+        text: `✅ Call answered by agent: [${agent}]`,
       });
 
       // Set the call as active
@@ -572,6 +604,8 @@ app.post("/call", async (req: Request, res: Response) => {
         event.To,
         event.From,
       );
+      // we have to wait a sec to get caller id...
+      await conference.fetchCallerId();
       const resp = conference.initialize(event);
 
       // IMMEDIATELY send TwiML back so the caller enters the room
