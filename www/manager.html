@@ -19,9 +19,41 @@
       }
 
       .day {
-        width: 200px;
+        width: 250px;
         border: 1px solid black;
         padding: 0.25em;
+        font-size: smaller;
+      }
+
+      .dayButton {
+        padding: 0 2px;
+        font-size: smaller;
+      }
+
+      input[type="time"] {
+        font-size: smaller;
+      }
+
+      .agentSummary {
+        display: flex;
+        justify-content: space-between;
+        cursor: pointer;
+      }
+
+      .agentEditor {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5em;
+      }
+
+      #control {
+        display: flex;
+        flex-direction: column;
+      }
+
+      #config {
+        height: 300px;
+        cursor: pointer;
       }
     </style>
   </head>
@@ -30,11 +62,12 @@
       import {
         html,
         render,
-        createContext,
-        useState,
-        useContext,
+        effect,
+        signal,
+        deepSignal,
         useEffect,
-      } from "https://esm.sh/htm/preact/standalone";
+        peek,
+      } from "https://npm.reversehttp.com/preact,htm/preact,@preact/signals,preact/hooks,deepsignal";
 
       const DAYS = [
         "Sunday",
@@ -46,44 +79,99 @@
         "Saturday",
       ];
 
-      const State = createContext({});
+      const State = deepSignal({
+        agents: {},
+        teams: [],
+        defaultAgent: {},
+        timeZones: [],
+      });
 
-      const DayEditor = ({}) => {};
+      const DayEditor = ({ agent, dayNum }) => {
+        return html`<div>
+          ${agent["hours"][dayNum]?.map(
+            (val, i) =>
+              html`<div>
+                <button
+                  class="dayButton"
+                  type="button"
+                  onclick=${() => {
+                    agent["hours"][dayNum].splice(i, 1);
+                  }}
+                >
+                  X</button
+                >${" "}
+                <input
+                  type="time"
+                  value=${val["start"]}
+                  onchange=${(e) => (val.start = e.target.value)}
+                />${" to "}
+                <input
+                  type="time"
+                  value=${val["end"]}
+                  onchange=${(e) => (val.end = e.target.value)}
+                />
+              </div>`,
+          )}
+          <button
+            class="dayButton"
+            type="button"
+            onclick=${() => {
+              agent["hours"][dayNum].push({
+                start: "00:00",
+                end: "00:01",
+              });
+            }}
+          >
+            +
+          </button>
+        </div>`;
+      };
 
       const AgentEditor = ({ agent }) => {
-        const { teams } = useContext(State);
-
         return html`
           <form class="agentEditor">
             <div class="agentFields">
               <div>
                 <label>Account enabled: </label>
-                <input type="checkbox" value=${agent["enabled"]} />
+                <input
+                  type="checkbox"
+                  checked=${agent["enabled"]}
+                  onchange=${(e) => (agent["enabled"] = e.target.checked)}
+                />
               </div>
               <div>
                 <label>Prefix#: </label>
                 <input
-                  name="prefix"
                   value=${agent["prefix"]}
+                  onchange=${(e) => (agent["prefix"] = e.target.value)}
                   style="width: 40px"
                 />
               </div>
               <div>
                 <label>Label: </label>
-                <input name="label" value=${agent["label"]} />
+                <input
+                  value=${agent["label"]}
+                  onchange=${(e) => (agent["label"] = e.target.value)}
+                />
               </div>
               <div>
                 <label>Team: </label>
-                <select name="team">
-                  ${teams?.map(
-                    (team) => html`<option value=${team}>${team}</option>`,
+                <select onchange=${(e) => (agent["team"] = e.target.value)}>
+                  ${State.teams?.map(
+                    (team) =>
+                      html`<option
+                        value=${team}
+                        selected=${team === agent["team"]}
+                      >
+                        ${team}
+                      </option>`,
                   )}
                 </select>
               </div>
               <div>
                 <label>Timezone: </label>
-                <select>
-                  ${Intl.supportedValuesOf("timeZone").map(
+                <select onchange=${(e) => (agent["timeZone"] = e.target.value)}>
+                  ${State.timeZones.map(
                     (tz) =>
                       html`<option
                         value=${tz}
@@ -96,15 +184,18 @@
               </div>
               <div>
                 <label>Slack ID: </label>
-                <input name="label" value=${agent["slackId"]} />
+                <input
+                  value=${agent["slackId"]}
+                  onchange=${(e) => (agent["slackId"] = e.target.value)}
+                />
               </div>
             </div>
             <div class="days">
-              ${DAYS.map((day) => {
+              ${DAYS.map((day, dayNum) => {
                 return html`
                 <div class="day">
-                    <span>${day}</span>
-                    
+                    <b>${day}</b>
+                    <${DayEditor} agent=${agent} dayNum=${dayNum} />
                 </day>`;
               })}
             </div>
@@ -113,42 +204,113 @@
       };
 
       const AgentDisplay = () => {
-        const { agents } = useContext(State);
-
         return html`<div>
-          ${Object.entries(agents ?? {}).map(([number, info]) => {
+          ${Object.entries(State.agents ?? {}).map(([number, info]) => {
             return html`
               <details>
-                <summary>${number} - ${info["label"]}</summary>
+                <summary class="agentSummary">
+                  ${number} (ext. ${info["prefix"]}) - ${info["label"]}
+                  <button
+                    type="button"
+                    onclick=${() => {
+                      if (
+                        confirm(
+                          `Are you sure you want to delete ${number} (${info["label"]})`,
+                        )
+                      ) {
+                        delete State.agents[number];
+                      }
+                    }}
+                  >
+                    Remove Agent
+                  </button>
+                </summary>
                 <${AgentEditor} agent=${info} />
               </details>
             `;
           })}
+          <button
+            onclick=${async () => {
+              const number = prompt(
+                "Enter phone number (no spaces, including '+[country code]'):",
+              );
+              if (number in State.agents) {
+                alert("Agent already specifed");
+              } else {
+                State.agents[number] = structuredClone(
+                  peek(State, "defaultAgent"),
+                );
+              }
+            }}
+          >
+            + Add Agent
+          </button>
         </div>`;
       };
 
       const App = () => {
-        const [agents, setAgents] = useState();
-        const [teams, setTeams] = useState();
-
         useEffect(() => {
           (async () => {
-            const req = await fetch("agents");
-            setAgents(await req.json());
-            const teamsReq = await fetch("teams");
-            setTeams(await teamsReq.json());
-          })();
+            const req = await fetch("info");
+            const info = await req.json();
+            State.agents = info.agents;
+            State.teams = info.teams;
+            State.defaultAgent = info.defaultAgent;
+            State.timeZones = info.timeZones;
+          })().catch(console.error);
         }, []);
 
-        return html`<${State.Provider} value=${{
-          agents,
-          teams,
-        }}>
-                <${AgentDisplay} />
-            </${State.Provider}>`;
+        return html`<div>
+          <${AgentDisplay} />
+          <hr />
+          <div id="control">
+            <button
+              onclick=${() => {
+                document.getElementById("config").value = JSON.stringify(
+                  State.agents,
+                  null,
+                  2,
+                );
+              }}
+            >
+              Export Config
+            </button>
+            <textarea
+              readonly
+              id="config"
+              w="800"
+              h="600"
+              onclick=${(e) => {
+                e.target.select();
+              }}
+            ></textarea>
+            <button
+              onclick=${async () => {
+                const req = await fetch("test", {
+                  method: "POST",
+                  body: JSON.stringify(State.agents),
+                  headers: {
+                    "Content-Type": "application/json",
+                  },
+                });
+                const response = await req.json();
+                if (response["success"]) {
+                  document.getElementById("errors").innerText = "";
+                  alert("Config is good!");
+                } else {
+                  document.getElementById("errors").innerText =
+                    response["errors"]["message"];
+                }
+              }}
+            >
+              Test Config
+            </button>
+            <pre id="errors"></pre>
+          </div>
+        </div>`;
       };
 
-      render(html`<${App} name="World" />`, document.body);
+      render(html`<${App} />`, document.body);
     </script>
   </body>
 </html>

@@ -8,7 +8,8 @@ import { config } from "dotenv";
 import { EventEmitter } from "events";
 import { scryptSync } from "crypto";
 import { z } from "zod";
-import { tz } from "@date-fns/tz";
+import { TZDate } from "@date-fns/tz";
+import { isWithinInterval, parse } from "date-fns";
 
 config();
 
@@ -39,16 +40,7 @@ const ADMIN_PASS = getEnv("ADMIN_PASS");
 const TEAMS = getEnv("TEAMS")
   .split(",")
   .map((x) => x.trim());
-
-const DAYS = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-];
+const COMPANY_NAME = getEnv("COMPANY_NAME");
 
 const agentSchema = z.object({
   label: z.string(),
@@ -57,17 +49,35 @@ const agentSchema = z.object({
   enabled: z.boolean(),
   timeZone: z.string(),
   slackId: z.string(),
-  hours: z.array(
-    z.object({
-      start: z.number().min(0).max(24),
-      end: z.number().min(0).max(24),
-      day: z.number().max(6).min(0),
-    }),
-  ),
+  hours: z
+    .array(
+      z.array(
+        z.object({
+          start: z.iso.time(),
+          end: z.iso.time(),
+        }),
+      ),
+    )
+    .min(7)
+    .max(7),
 });
 
-const AGENTS: Record<string, string> = JSON.parse(
-  readFileSync("agents.json", { encoding: "utf-8" }),
+type AgentSchema = z.infer<typeof agentSchema>;
+
+const agentFile = z.record(z.e164(), agentSchema);
+
+const defaultAgent = {
+  enabled: true,
+  label: "New Agent",
+  prefix: "0000",
+  slackId: "",
+  team: TEAMS[0],
+  timeZone: "Etc/UTC",
+  hours: [[], [], [], [], [], [], []],
+} satisfies z.infer<typeof agentSchema>;
+
+const AGENTS = agentFile.parse(
+  JSON.parse(readFileSync("agents.json", { encoding: "utf-8" })),
 );
 
 const validatePassword = (password: string) => {
@@ -86,6 +96,9 @@ enum Action {
   FINISHED = "finished",
   CONFERENCE_STATUS = "conferenceStatus",
   RECORDING = "recording",
+  INITIALIZE = "initialize",
+  IVR = "ivr",
+  DIRECT = "direct",
 }
 
 type ActionParams = {
@@ -98,6 +111,13 @@ type ActionParams = {
   };
   [Action.CONFERENCE_STATUS]: {};
   [Action.RECORDING]: {};
+  [Action.IVR]: {
+    team?: string;
+  };
+  [Action.INITIALIZE]: {
+    team: string;
+  };
+  [Action.DIRECT]: {};
 };
 
 // Represents someone who answers calls
@@ -106,10 +126,41 @@ class Agent {
   call: Promise<CallInstance> | null;
   number: string;
   name: string;
-  constructor(number: string, name: string) {
+  team: string;
+  prefix: string;
+  hours: AgentSchema["hours"];
+  enabled: boolean;
+  timeZone: string;
+  slackId: string;
+
+  constructor(number: string, info: AgentSchema) {
     this.call = null;
     this.number = number;
-    this.name = name;
+    this.name = info.label;
+    this.team = info.team;
+    this.hours = info.hours;
+    this.enabled = info.enabled;
+    this.prefix = info.prefix;
+    this.timeZone = info.timeZone;
+    this.slackId = info.slackId;
+  }
+
+  isOnCall() {
+    const converted = new TZDate(new Date(), this.timeZone);
+    const hours = this.hours[converted.getDay()];
+    for (const range of hours) {
+      const start = parse(range.start, "HH:mm", converted);
+      const end = parse(range.end, "HH:mm", converted);
+      if (
+        isWithinInterval(converted, {
+          start,
+          end,
+        })
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   toString() {
@@ -165,7 +216,7 @@ class AgentPoolManager extends EventEmitter<{
     this.agents = {};
     this.queue = [];
     // Load up our agents
-    for (const k in AGENTS) {
+    for (const k of Object.keys(AGENTS)) {
       this.agents[k] = new Agent(k, AGENTS[k]);
     }
 
@@ -227,8 +278,12 @@ class AgentPoolManager extends EventEmitter<{
 
     const free = this.freeAgents;
     for (const freeAgent of free) {
-      freeAgent.startCall(current);
-      current.attachedAgents.push(freeAgent);
+      if (freeAgent.isOnCall() && freeAgent.team === current.teamTarget) {
+        freeAgent.startCall(current);
+        current.attachedAgents.push(freeAgent);
+      } else {
+        console.log(`[DEBUG] ${freeAgent.name} is off hours`);
+      }
     }
   }
 
@@ -257,6 +312,8 @@ class Conference {
   answeringMachineCallback?: ReturnType<typeof setTimeout>;
   // Whether or not this is in voicemail
   voiceMail: boolean;
+
+  teamTarget?: string;
 
   constructor(
     baseUrl: string,
@@ -298,16 +355,63 @@ class Conference {
     return url.toString();
   }
 
-  // Start the call. Logs to Slack and move the customer into a Twilio conference
-  initialize(event: any) {
+  ivrMenu(event: any) {
+    console.log(`[DEBUG]: IVR started for ${this.callerNumber}`);
     const response = new twiml.VoiceResponse();
+    const digits = event?.Digits;
+    if (digits != undefined) {
+      const parsed = parseInt(digits);
 
-    console.log("DEBUG: Initial Caller / Dial Logic");
-    axios.post(SLACK_WEBHOOK_URL, {
-      text: `☎️ Incoming call to number from: ${event.From}`,
+      if (digits === 0) {
+        // continue on...
+      } else if (digits === "#") {
+        response.redirect(this.actionUrl(Action.DIRECT, {}));
+        return response;
+      } else if (!isNaN(parsed) && TEAMS[parsed - 1]) {
+        response.redirect(
+          this.actionUrl(Action.INITIALIZE, {
+            team: TEAMS[parsed - 1],
+          }),
+        );
+        return response;
+      } else {
+        response.say("Unknown team.");
+      }
+    }
+    // don't spam if looping
+    if (event.CallStatus === "ringing") {
+      axios.post(SLACK_WEBHOOK_URL, {
+        text: `☎️ Incoming call to number from: ${event.From}`,
+      });
+    }
+
+    const teamMessage = TEAMS.map(
+      (team, i) => `For the ${team} team, press ${i + 1}`,
+    );
+
+    const gather = response.gather({
+      action: this.actionUrl(Action.IVR, {}),
+      numDigits: 1,
+      timeout: 30,
+      finishOnKey: "0",
     });
+    gather.say(
+      `Welcome to ${COMPANY_NAME}! ${teamMessage.join(". ")}. If you know the extension of the agent you would like to talk to, please press pound. To repeat these options, press 0.`,
+    );
 
-    console.log("DEBUG: Put the incoming caller into a unique Conference room");
+    response.redirect(this.actionUrl(Action.IVR, {}));
+    return response;
+  }
+
+  // Start the call. Logs to Slack and move the customer into a Twilio conference
+  initialize({ team }: ActionParams["initialize"]) {
+    const response = new twiml.VoiceResponse();
+    this.teamTarget = team;
+
+    console.log(
+      "DEBUG: Put the incoming caller into a unique Conference room, targeting",
+      team,
+    );
     const dial = response.dial({
       action: this.actionUrl(Action.FINISHED, {}),
     });
@@ -549,6 +653,16 @@ app.post("/call", async (req: Request, res: Response) => {
   console.log(`DEBUG: event = ${JSON.stringify(event, null, 2)}`);
 
   try {
+    if (action === Action.INITIALIZE) {
+      if (!conference) {
+        throw new Error("ERROR: conferenceName missing");
+      }
+      const resp = conference.initialize(req.query as any);
+
+      res.type("text/xml").send(resp.toString());
+      return;
+    }
+
     if (action === Action.WHISPER) {
       console.log("DEBUG: Whisper Logic: agent answers");
       if (!conference) {
@@ -604,16 +718,18 @@ app.post("/call", async (req: Request, res: Response) => {
       return;
     }
 
-    // Fresh call (no DialStatus yet)
-    if (!event.DialStatus) {
+    // Fresh call or IVR loop
+    if (!event.DialStatus || action === Action.IVR) {
       // Start a call
-      const conference = new Conference(
-        baseUrl.toString().replace(/\/$/, ""),
-        event.CallSid,
-        event.To,
-        event.From,
-      );
-      const resp = conference.initialize(event);
+      const conf =
+        conference ??
+        new Conference(
+          baseUrl.toString().replace(/\/$/, ""),
+          event.CallSid,
+          event.To,
+          event.From,
+        );
+      const resp = conf.ivrMenu(event);
 
       // IMMEDIATELY send TwiML back so the caller enters the room
       res.type("text/xml").send(resp.toString());
@@ -652,6 +768,7 @@ app.get("/recording", async (req, res) => {
 });
 
 const adminRoutes = express.Router();
+adminRoutes.use(express.json());
 
 // Bless https://stackoverflow.com/a/33905671
 adminRoutes.use((req, res, next) => {
@@ -666,12 +783,22 @@ adminRoutes.use((req, res, next) => {
   res.status(401).send("Authentication required."); // custom message
 });
 
-adminRoutes.get("/agents", async (_, res) => {
-  res.json(AGENTS);
+adminRoutes.get("/info", async (_, res) => {
+  res.json({
+    agents: AGENTS,
+    teams: TEAMS,
+    defaultAgent,
+    timeZones: [...Intl.supportedValuesOf("timeZone"), "Etc/UTC"],
+  });
 });
 
-adminRoutes.get("/teams", async (_, res) => {
-  res.json(TEAMS);
+adminRoutes.post("/test", async (req, res) => {
+  const test = agentFile.safeParse(req.body);
+
+  res.json({
+    success: test.success,
+    errors: test.error,
+  });
 });
 
 adminRoutes.get("/manager", async (_, res) => {
