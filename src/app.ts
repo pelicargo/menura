@@ -284,7 +284,7 @@ class Conference {
   }
 
   // Start the call. Logs to Slack and move the customer into a Twilio conference
-  initialize(event: any) {
+  initialize() {
     const response = new twiml.VoiceResponse();
 
     console.log("DEBUG: Initial Caller / Dial Logic");
@@ -606,7 +606,7 @@ app.post("/call", async (req: Request, res: Response) => {
       );
       // we have to wait a sec to get caller id...
       await conference.fetchCallerId();
-      const resp = conference.initialize(event);
+      const resp = conference.initialize();
 
       // IMMEDIATELY send TwiML back so the caller enters the room
       res.type("text/xml").send(resp.toString());
