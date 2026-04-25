@@ -37,6 +37,7 @@
       .agentSummary {
         display: flex;
         justify-content: space-between;
+        font-weight: bolder;
         cursor: pointer;
       }
 
@@ -204,7 +205,7 @@
       };
 
       const AgentDisplay = () => {
-        return html`<div>
+        return html`<div class="agentEditor">
           ${Object.entries(State.agents ?? {}).map(([number, info]) => {
             return html`
               <details>
