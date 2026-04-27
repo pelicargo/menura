@@ -47,6 +47,11 @@
         gap: 0.5em;
       }
 
+      .teamSelect {
+        align-items: baseline;
+        display: flex;
+      }
+
       #control {
         display: flex;
         flex-direction: column;
@@ -155,14 +160,23 @@
                   onchange=${(e) => (agent["label"] = e.target.value)}
                 />
               </div>
-              <div>
+              <div class="teamSelect">
                 <label>Team: </label>
-                <select onchange=${(e) => (agent["team"] = e.target.value)}>
+                <select
+                  class="teamSelect"
+                  onchange=${(e) => {
+                    agent["team"] = Array.from(e.target.selectedOptions).map(
+                      (x) => x.value,
+                    );
+                  }}
+                  size=${State.teams?.length}
+                  multiple
+                >
                   ${State.teams?.map(
                     (team) =>
                       html`<option
                         value=${team}
-                        selected=${team === agent["team"]}
+                        selected=${agent["team"].includes(team)}
                       >
                         ${team}
                       </option>`,

@@ -47,7 +47,7 @@ const COMPANY_NAME = getEnv("COMPANY_NAME");
 const agentSchema = z.object({
   label: z.string(),
   prefix: z.string().regex(/^[0-9]{4}$/),
-  team: z.string(),
+  team: z.array(z.enum(TEAMS)),
   enabled: z.boolean(),
   timeZone: z.string(),
   slackId: z.string(),
@@ -73,7 +73,7 @@ const defaultAgent = {
   label: "New Agent",
   prefix: "0000",
   slackId: "",
-  team: TEAMS[0],
+  team: [TEAMS[0]],
   timeZone: "Etc/UTC",
   hours: [[], [], [], [], [], [], []],
 } satisfies z.infer<typeof agentSchema>;
@@ -145,7 +145,7 @@ class Agent {
   call: Promise<CallInstance> | null;
   number: string;
   name: string;
-  team: string;
+  teams: string[];
   prefix: string;
   hours: AgentSchema["hours"];
   enabled: boolean;
@@ -156,7 +156,7 @@ class Agent {
     this.call = null;
     this.number = number;
     this.name = info.label;
-    this.team = info.team;
+    this.teams = info.team;
     this.hours = info.hours;
     this.enabled = info.enabled;
     this.prefix = info.prefix;
@@ -324,15 +324,18 @@ class AgentPoolManager extends EventEmitter<{
 
     const free = this.freeAgents;
     for (const freeAgent of free) {
-      if (freeAgent.isOnCall() && freeAgent.team === current.teamTarget) {
+      if (
+        freeAgent.isOnCall() &&
+        freeAgent.teams.includes(current.teamTarget ?? "")
+      ) {
         freeAgent.startCall(current);
         current.attachedAgents.push(freeAgent);
       } else {
         console.log(
           `[DEBUG] ${freeAgent.name} does not match: `,
           freeAgent.isOnCall(),
-          freeAgent.team === current.teamTarget,
-          freeAgent.team,
+          freeAgent.teams.includes(current.teamTarget ?? ""),
+          freeAgent.teams,
           current.teamTarget,
         );
       }
