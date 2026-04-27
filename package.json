@@ -20,6 +20,7 @@
   "license": "MIT",
   "dependencies": {
     "@date-fns/tz": "1.4.1",
+    "@slack/web-api": "7.15.1",
     "axios": "1.15.0",
     "body-parser": "2.2.2",
     "date-fns": "4.1.0",

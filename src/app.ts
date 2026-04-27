@@ -11,6 +11,7 @@ import { z } from "zod";
 import { TZDate } from "@date-fns/tz";
 import { isWithinInterval, parse } from "date-fns";
 import { PhoneNumberInstance } from "twilio/lib/rest/lookups/v2/phoneNumber.js";
+import { WebClient } from "@slack/web-api";
 import VoiceResponse from "twilio/lib/twiml/VoiceResponse.js";
 
 config();
@@ -33,7 +34,9 @@ app.set("trust proxy", true);
 // Twilio sends data as URL-encoded forms
 app.use(bodyParser.urlencoded({ extended: false }));
 
-const SLACK_WEBHOOK_URL = getEnv("SLACK_WEBHOOK_URL");
+const SLACK_BOT_TOKEN = getEnv("SLACK_BOT_TOKEN");
+const SLACK_CHANNEL_ID = getEnv("SLACK_CHANNEL_ID");
+
 const PORT = Number(getEnv("PORT")) || 3000;
 const TWILIO_SID = getEnv("TWILIO_SID");
 const TWILIO_TOKEN = getEnv("TWILIO_TOKEN");
@@ -89,16 +92,12 @@ const validatePassword = (password: string) => {
   return goodHash === passHash;
 };
 
-const slackLog = async (
-  text: string,
-  mention?: {
-    mention: string;
-    mention_text: string;
-  },
-) => {
-  await axios.post(SLACK_WEBHOOK_URL, {
-    text: text,
-    ...(mention ?? {}),
+const webClient = new WebClient(SLACK_BOT_TOKEN);
+
+const slackLog = async (text: string) => {
+  webClient.chat.postMessage({
+    channel: SLACK_CHANNEL_ID,
+    text,
   });
 };
 
@@ -311,7 +310,6 @@ class AgentPoolManager extends EventEmitter<{
       if (conf.attachedAgents.length === 1 && !agent.call && agent.isOnCall()) {
         const agent = conf.attachedAgents[0];
         agent.startCall(conf);
-        conf.attachedAgents.push(agent);
       }
     }
 
@@ -583,13 +581,7 @@ class Conference {
       const targeted = AgentPool.getAgentByPrefix(this.agentTargetPrefix);
 
       slackLog(
-        `❌ ${this.identifyCaller()} sent to voicemail`,
-        targeted?.slackId
-          ? {
-              mention: targeted.slackId,
-              mention_text: "Was directly calling: ",
-            }
-          : undefined,
+        `❌ ${this.identifyCaller()} sent to voicemail ${targeted?.slackId ? `\nWas directly calling: <@${targeted.slackId}>` : ""}`,
       );
       this.voiceMail = true;
 
@@ -625,13 +617,7 @@ class Conference {
       const targeted = AgentPool.getAgentByPrefix(this.agentTargetPrefix);
 
       slackLog(
-        `❌ Missed call from [${this.identifyCaller()}] ${url ? `| Voicemail URL: ${recording.toString()}` : ""}`,
-        targeted?.slackId
-          ? {
-              mention: targeted.slackId,
-              mention_text: "Was directly calling: ",
-            }
-          : undefined,
+        `❌ Missed call from [${this.identifyCaller()}] ${url ? `| Voicemail URL: ${recording.toString()}` : ""} ${targeted?.slackId ? `\nWas directly calling: <@${targeted.slackId}>` : ""}`,
       );
     }
     this.cleanup();
