@@ -164,6 +164,9 @@ class Agent {
   }
 
   isOnCall() {
+    if (!this.enabled) {
+      return false;
+    }
     const converted = new TZDate(new Date(), this.timeZone);
     const hours = this.hours[converted.getDay()];
     for (const range of hours) {
