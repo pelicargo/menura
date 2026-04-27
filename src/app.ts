@@ -586,8 +586,9 @@ class Conference {
       this.voiceMail = true;
 
       const response = new twiml.VoiceResponse();
+      const who = this.agentTargetPrefix ? "this agent is" : "our agents are";
       response.say(
-        "Unfortunately, our agents are busy at this time. Please leave a message on the beep.",
+        `Unfortunately, ${who} busy at this time. Please leave a message on the beep.`,
       );
       response.record({
         action: this.actionUrl(Action.RECORDING, {}),
