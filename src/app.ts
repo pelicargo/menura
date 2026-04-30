@@ -288,7 +288,7 @@ class AgentPoolManager extends EventEmitter<{
   // Return agents who do not have a call associated to them
   public get freeAgents() {
     return Object.values(this.agents)
-      .filter((info) => !info.call)
+      .filter((info) => !info.call && info.isOnCall())
       .map((info) => info);
   }
 
@@ -620,9 +620,15 @@ class Conference {
       recording.searchParams.set("url", url);
       const targeted = AgentPool.getAgentByPrefix(this.agentTargetPrefix);
 
-      slackLog(
-        `❌ Missed call from [${this.identifyCaller()}] ${url ? `| Voicemail URL: ${recording.toString()}` : ""} ${targeted?.slackId ? `\nWas directly calling: <@${targeted.slackId}>` : ""}`,
-      );
+      if (!this.teamTarget && !this.agentTargetPrefix) {
+        slackLog(
+          `⚠️ ${this.identifyCaller()} Call ended without any IVR selection`,
+        );
+      } else {
+        slackLog(
+          `❌ Missed call from [${this.identifyCaller()}] ${url ? `| <Voicemail|${recording.toString()}>` : "No voicemail"} ${targeted?.slackId ? `\nWas directly calling: <@${targeted.slackId}>` : ""}`,
+        );
+      }
     }
     this.cleanup();
     response.hangup();
@@ -852,6 +858,29 @@ const buildUrl = (req: Request) => {
     req.headers?.["x-forwarded-host"] ?? req.headers?.["host"] ?? req.host;
   return new URL(`${proto}://${host}`).toString();
 };
+
+// Used for final statuses
+app.post("/status", async (req: Request, res: Response) => {
+  const baseUrl = new URL(process.env.ROOT_URL || buildUrl(req));
+
+  if (
+    !twilio.validateIncomingRequest(req, TWILIO_TOKEN, {
+      host: baseUrl.host,
+      protocol: baseUrl.protocol,
+      url: baseUrl.toString().replace(/\/$/, "") + req.url,
+    })
+  ) {
+    res.sendStatus(403);
+    return;
+  }
+  const body = req.body;
+  const conference = activeConferences.get(body.CallSid);
+  if (conference) {
+    if (body.CallStatus === "completed") {
+      conference.finished(true);
+    }
+  }
+});
 
 // Endpoint for Twilio calls
 app.post("/call", async (req: Request, res: Response) => {
